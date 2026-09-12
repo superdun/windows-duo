@@ -6,7 +6,7 @@
 
 ## 运行
 
-需要 .NET 9 Windows Desktop Runtime。
+需要 .NET 10 Windows Desktop Runtime。
 
 ```powershell
 dotnet run --project WindowsDuo.csproj -c Release
@@ -18,6 +18,7 @@ dotnet run --project WindowsDuo.csproj -c Release
 - 右键托盘图标：开始/停止效果、设置、退出
 - `Ctrl+Shift+B`：开关效果
 - `Esc`：效果开启时立刻关掉（不需要设置窗口在前台）
+- 本机没有铰链角 / 倾角计时，键盘空闲约 10 秒后用前置摄像头跟盖：画面整体上移（合盖）才开始自动模糊，随后上下都跟手；停住 10 秒后平滑退模糊
 
 退出请用托盘菜单「退出」。
 

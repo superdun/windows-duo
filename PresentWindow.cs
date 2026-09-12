@@ -82,6 +82,17 @@ internal sealed class PresentWindow : IDisposable
         Log.Info("present window revealed");
     }
 
+    public void Conceal()
+    {
+        if (_hwnd == 0)
+        {
+            return;
+        }
+
+        Native.ShowWindow(_hwnd, Native.SwHide);
+        Log.Info("present window concealed");
+    }
+
     public void Dispose()
     {
         if (_hwnd != 0)

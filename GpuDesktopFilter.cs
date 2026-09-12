@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -25,17 +26,61 @@ internal sealed class GpuDesktopFilter : IDisposable
     private CancellationTokenSource? _cts;
     private Thread? _thread;
     private PresentWindow? _window;
+    private bool _autoFold;
+    private float _amountTarget;
+    private float _amountShown;
+    private float _amountVelocity;
+    private float _amountSmoothTime = 0.08f;
 
     public string AdapterName { get; private set; } = "";
     public double Fps { get; private set; }
     public string? LastError { get; private set; }
     public bool Running => _thread is { IsAlive: true };
+    public float ShownAmount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _amountShown;
+            }
+        }
+    }
 
     public void UpdateParams(EffectParams effect)
     {
         lock (_gate)
         {
             _params = effect;
+        }
+    }
+
+    public void SetAutoFold(float amount, float smoothTime)
+    {
+        lock (_gate)
+        {
+            _autoFold = true;
+            _amountTarget = Math.Clamp(amount, 0f, 80f);
+            _amountSmoothTime = Math.Max(0.04f, smoothTime);
+        }
+    }
+
+    public void ClearAutoFold()
+    {
+        lock (_gate)
+        {
+            _autoFold = false;
+            _amountVelocity = 0f;
+        }
+    }
+
+    public void SnapShown(float amount)
+    {
+        lock (_gate)
+        {
+            _amountShown = Math.Clamp(amount, 0f, 80f);
+            _amountTarget = _amountShown;
+            _amountVelocity = 0f;
         }
     }
 
@@ -48,6 +93,17 @@ internal sealed class GpuDesktopFilter : IDisposable
 
         Stop();
         LastError = null;
+        lock (_gate)
+        {
+            if (!_autoFold)
+            {
+                _amountShown = _params.Amount;
+                _amountTarget = _params.Amount;
+                _amountVelocity = 0f;
+                _amountSmoothTime = 0.08f;
+            }
+        }
+
         Log.Info("filter start");
         _window = new PresentWindow();
         _window.ShowOnPrimary();
@@ -158,6 +214,7 @@ internal sealed class GpuDesktopFilter : IDisposable
             var stamp = Environment.TickCount64;
             var warnedAcquire = false;
             var overlayRevealed = false;
+            var lastTick = Stopwatch.GetTimestamp();
             while (!token.IsCancellationRequested)
             {
                 var acquired = duplication.AcquireNextFrame(4, out _, out var resource);
@@ -247,16 +304,23 @@ internal sealed class GpuDesktopFilter : IDisposable
                     continue;
                 }
 
-                EffectParams effect;
-                lock (_gate)
-                {
-                    effect = _params;
-                }
-
                 const float warpFrom = 40f;
                 const float warpUntil = 55f;
                 const float fadeUntil = 80f;
-                var amount = Math.Clamp(effect.Amount, 0f, fadeUntil);
+                EffectParams effect;
+                float amount;
+                float amountTarget;
+                lock (_gate)
+                {
+                    effect = _params;
+                    amountTarget = _autoFold ? _amountTarget : effect.Amount;
+                    var smoothTime = _autoFold ? _amountSmoothTime : 0.08f;
+                    var nowTick = Stopwatch.GetTimestamp();
+                    var dt = (float)((nowTick - lastTick) / (double)Stopwatch.Frequency);
+                    lastTick = nowTick;
+                    _amountShown = Smooth.Damp(_amountShown, amountTarget, ref _amountVelocity, smoothTime, dt);
+                    amount = Math.Clamp(_amountShown, 0f, fadeUntil);
+                }
                 var warp = Math.Min(amount, warpUntil);
                 var travel = warp * (warpFrom / warpUntil);
                 var corners = DepthMath.Corners(width, height, travel, effect.Angle, viewingDistance: 6.0, recession: 1.0);
@@ -295,12 +359,22 @@ internal sealed class GpuDesktopFilter : IDisposable
                 context.Draw(3, 0);
                 swapChain.Present(1, PresentFlags.None);
 
-                frames++;
-                if (frames == 1)
+                if (!overlayRevealed && amount > 1.15f)
                 {
                     Log.Info($"first present {width}x{height}");
                     _window?.Reveal();
                     overlayRevealed = true;
+                }
+                else if (overlayRevealed && amount < 0.35f && amountTarget < 0.5f)
+                {
+                    _window?.Conceal();
+                    overlayRevealed = false;
+                }
+
+                frames++;
+                if (frames == 1)
+                {
+                    Log.Info($"gpu loop {width}x{height}");
                 }
                 var now = Environment.TickCount64;
                 if (now - stamp >= 500)

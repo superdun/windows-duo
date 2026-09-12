@@ -11,6 +11,7 @@ internal static class Native
     public const int WsExTopmost = 0x00000008;
     public const int WsExNoRedirectionBitmap = 0x00200000;
     public const int WsPopup = unchecked((int)0x80000000);
+    public const int SwHide = 0;
     public const int SwShow = 5;
     public const int SwShowNoActivate = 4;
     public const uint WdaExcludeFromCapture = 0x00000011;

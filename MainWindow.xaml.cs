@@ -9,10 +9,12 @@ public partial class MainWindow : Window
 {
     private readonly GpuDesktopFilter _filter = new();
     private readonly DispatcherTimer _statusTimer;
+    private readonly LidAutoFold _lid;
     private const int HotkeyId = 1;
     private readonly EscHook _esc = new();
     private bool _allowClose;
     private DateTime _shownAt;
+    private bool _syncingSlider;
 
     public event Action? TrayDisposed;
 
@@ -21,20 +23,26 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _lid = new LidAutoFold(_filter, Dispatcher);
+        _lid.Changed += RefreshStatus;
         _esc.EscPressed += () => Dispatcher.BeginInvoke(StopEffect);
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         _statusTimer.Tick += (_, _) => RefreshStatus();
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
             Log.Info($"ui loaded log={Log.FilePath}");
             _filter.UpdateParams(ReadParams());
+            _lid.Sensitivity = (float)SensitivitySlider.Value;
             _statusTimer.Start();
+            await _lid.StartAsync();
+            RefreshStatus();
         };
         Closed += (_, _) =>
         {
             UnregisterHotkey();
             _esc.Dispose();
             _statusTimer.Stop();
+            _lid.Dispose();
             _filter.Dispose();
         };
     }
@@ -63,6 +71,8 @@ public partial class MainWindow : Window
         if (_filter.Running)
         {
             Log.Info("esc stop");
+            _lid.ManualPreview = false;
+            _lid.CancelToIdle();
             _filter.Stop();
             _esc.Uninstall();
             ToggleButton.Content = "开始实时效果";
@@ -73,6 +83,7 @@ public partial class MainWindow : Window
     public void ExitApp()
     {
         _allowClose = true;
+        _lid.Dispose();
         _filter.Dispose();
         TrayDisposed?.Invoke();
         Close();
@@ -94,17 +105,19 @@ public partial class MainWindow : Window
         AmountValue.Text = $"{AmountSlider.Value:0}°";
         GradientValue.Text = $"{GradientSlider.Value:0.00}";
         HighlightValue.Text = $"{HighlightSlider.Value:0.00}";
+        SensitivityValue.Text = $"{SensitivitySlider.Value:0.00}×";
         SheenValue.Text = $"{SheenSlider.Value:0.00}";
     }
 
     private void OnParamChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (!IsLoaded)
+        if (!IsLoaded || _syncingSlider)
         {
             return;
         }
 
         UpdateLabels();
+        _lid.Sensitivity = (float)SensitivitySlider.Value;
         _filter.UpdateParams(ReadParams());
     }
 
@@ -119,6 +132,8 @@ public partial class MainWindow : Window
         if (_filter.Running)
         {
             Log.Info("ui stop");
+            _lid.ManualPreview = false;
+            _filter.ClearAutoFold();
             _filter.Stop();
             _esc.Uninstall();
             ToggleButton.Content = "开始实时效果";
@@ -126,7 +141,10 @@ public partial class MainWindow : Window
         else
         {
             Log.Info("ui start");
+            _lid.ManualPreview = true;
+            _filter.ClearAutoFold();
             _filter.UpdateParams(ReadParams());
+            _filter.SnapShown((float)AmountSlider.Value);
             _filter.Start();
             _esc.Install();
             ToggleButton.Content = "停止实时效果";
@@ -135,13 +153,32 @@ public partial class MainWindow : Window
         RefreshStatus();
     }
 
+    private void OnAutoFoldChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _lid.SetEnabled(AutoFoldBox.IsChecked == true);
+        RefreshStatus();
+    }
+
     private void RefreshStatus()
     {
+        if (_lid.Driving && !_syncingSlider)
+        {
+            _syncingSlider = true;
+            AmountSlider.Value = _filter.ShownAmount;
+            _syncingSlider = false;
+        }
+
         UpdateLabels();
         if (!string.IsNullOrEmpty(_filter.LastError))
         {
             StatusText.Text = _filter.LastError;
             ToggleButton.Content = "开始实时效果";
+            _lid.ManualPreview = false;
             _filter.Stop();
             _esc.Uninstall();
             return;
@@ -149,12 +186,18 @@ public partial class MainWindow : Window
 
         if (_filter.Running)
         {
-            StatusText.Text = $"{_filter.AdapterName}  ·  {_filter.Fps:0} fps  ·  透视虚化";
+            var fold = _lid.Driving ? _lid.Status : "透视虚化";
+            StatusText.Text = $"{_filter.AdapterName}  ·  {_filter.Fps:0} fps  ·  {fold}";
             ToggleButton.Content = "停止实时效果";
+            if (_lid.Driving && !_esc.Installed)
+            {
+                _esc.Install();
+            }
         }
         else
         {
-            StatusText.Text = "已停止。左键托盘图标打开设置。";
+            StatusText.Text = $"{_lid.Status}。左键托盘图标打开设置。";
+            ToggleButton.Content = "开始实时效果";
         }
     }
 
